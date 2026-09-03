@@ -10,7 +10,7 @@ is published here. Because the root is a commitment to every row underneath it, 
 published on a date proves that every row it covers already existed on that date — and could not
 be changed afterwards without the root changing too.
 
-The Simul8 Constitution v2.3 §45(e) permits presenting a forecast as *independently verifiable*
+The Simul8 Constitution v2.4 §45(e) permits presenting a forecast as *independently verifiable*
 only when a published anchor covers it and that anchor's third-party timestamp precedes the
 forecast's resolution. This repository is the published half of that claim.
 
@@ -23,10 +23,23 @@ OpenTimestamps receipts are for.
 
 | Path | What it is |
 |---|---|
-| `anchors/<year>/*.anchor.json` | one published anchor: a canonical JSON line carrying the Merkle root, how many rows it covers, the last row id, the ledger schema version, and the time we built the tree |
+| `anchors/<year>/*.anchor.json` | one published entry — either an **anchor** (a canonical JSON line carrying the Merkle root, how many rows it covers, the last row id, the ledger schema version, and the time we built the tree) or an **empty marker** (`"status":"empty"`) on a day the Log held no rows. A date may have more than one of these files |
 | `anchors/<year>/*.anchor.json.ots` | the OpenTimestamps receipt for that line's SHA-256 |
 | `VERIFY.md` | the complete specification: canonical serialization, hashing, the tree, inclusion proofs, and the anchor procedure |
 | `verify.py` | a dependency-free reference verifier |
+| `.github/workflows/` | a scheduled check of this record. It stays idle while the record is empty and arms itself once the first entry is published; from then on it checks each day that an entry arrived and that the receipts are upgrading. It holds no credential and touches nothing of ours — that is the point of it living here |
+
+**Nothing has been published here yet.** The ledger is not yet running, so this record is empty:
+there are no entries, and a date with no file means only that publication has not begun. The first
+entry will be an empty marker saying so plainly, which is how you will be able to see for yourself
+exactly when we started.
+
+**Once publication begins, every day publishes at least one entry, and often more than one**, and
+from then on a date with no file means something failed rather than something being quiet. One
+entry is published on a floor cadence — currently once a day — and another after each batch of new
+forecasts, so several entries on one date is ordinary and is not a sign that anything went wrong or
+was rewritten. More entries is more of the record committed sooner: an entry can only add coverage,
+never remove it, and no entry already published is ever changed.
 
 **What is *not* in here, and never will be:** any forecast, any resolution, any operator or
 customer data, any credential. Only roots and timestamps. A Merkle root is a hash — it commits to
@@ -44,7 +57,10 @@ cd simul8-anchors
 #    This uses no Simul8 data at all — it recomputes every test vector in VERIFY.md.
 python3 verify.py --self-test
 
-# 2. Check an actual forecast, given the row and its inclusion proof.
+# 2. See what the published record contains, date by date.
+python3 verify.py --history --anchors anchors/
+
+# 3. Check an actual forecast, given the row and its inclusion proof.
 python3 verify.py --claim claim.json --anchors anchors/
 ```
 

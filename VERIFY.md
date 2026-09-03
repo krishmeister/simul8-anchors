@@ -1,12 +1,21 @@
 # VERIFY.md — canonical form, hashing, the tree, and the anchor
 
-**Part 1 (sections 1–8) froze at LOG pass and is unchanged.** **Part 2 (sections 9–13) was
-written at ANCHOR pass** and appends only the anchor and timestamp layer: it supplies the fifth
-step section 8 names and leaves every rule above it exactly as it was. Nothing in Part 2
-restates a Part 1 rule, because two statements of one rule are two rules the moment one is
-edited.
+**Part 1 (sections 1–8) froze at LOG pass.** **Part 2 (sections 9–13) was written at ANCHOR
+pass** and appends only the anchor and timestamp layer: it supplies the fifth step section 8
+names and leaves every rule above it exactly as it was. Nothing in Part 2 restates a Part 1
+rule, because two statements of one rule are two rules the moment one is edited.
 
-This document exists because of one clause. The Simul8 Constitution v2.3 §45(e) permits
+**Part 1 has been amended once since the freeze, under BUILD-STATE R-352 and R-353, and this
+paragraph records it rather than letting the document claim it never moved.** The currency rule
+of section 1 said *"integer count of paise"*; it now says *"integer count of the currency's
+minor unit, per its ISO 4217 exponent"*, which is **the same rule stated for every currency**.
+INR's exponent is 2, so ₹1499.00 remains `"149900"`: **no published value changes, no existing
+vector moves, and an implementation written against the earlier wording still agrees with this
+one on every INR amount.** The amendment adds the currency vectors section 1 had never carried
+— the reason it was safe to state the rule correctly is the same reason it was urgent to pin it
+— and Part 2 gains section 12a. Nothing else in either part is touched.
+
+This document exists because of one clause. The Simul8 Constitution v2.4 §45(e) permits
 presenting a prediction as independently verifiable only if an outside party can recompute the
 path from that prediction to a published Merkle root. A privately held tree can be rebuilt, so
 "we checked it" is not verification. Verification means **someone with none of our code and
@@ -65,9 +74,80 @@ caller at write time; where it is unspecified **the write fails**, and it is nev
 | Quantity | Written as | Example |
 |---|---|---|
 | Units, counts, tree sizes | integer; no leading zeros, no `+`, one spelling of zero | `"1842"`, `"0"`, `"-3"` |
-| Currency | integer count of **paise** | ₹1499.00 → `"149900"` |
+| Currency | integer count of the currency's **minor unit**, per its ISO 4217 exponent | ₹1499.00, exponent 2 → `"149900"` |
 | Probabilities, quantile levels | fixed **two** decimal places | `"0.07"`, `"1.00"` |
 | Anything else | the caller's stated number of places | `"12.500"` at three places |
+
+### Currency, and the ISO 4217 exponent
+
+The currency row above said **paise** until this revision, and it means the same thing for INR
+— exponent 2, ₹1499.00 → `"149900"`, byte for byte what it always was. "Paise" is INR-specific
+and this document is implemented against by people who will not be holding rupees: JPY has no
+minor unit at all and KWD divides into thousandths. The rule is stated for every currency and
+no existing value moves.
+
+Two inputs decide the conversion, and **both are supplied by the caller**:
+
+- the **exponent** — the ISO 4217 exponent of the currency, i.e. how many decimal places its
+  minor unit divides its major unit into. 2 for INR and USD, 0 for JPY, 3 for KWD;
+- the **unit** the amount is already written in: `major_unit` or `minor_unit`, and nothing else.
+
+The rule in full:
+
+1. If the unit is `major_unit`, shift the decimal point **right by the exponent**. If it is
+   `minor_unit` the amount is already an integer count of the minor unit and shifts by
+   **nothing** — so at exponent 0 the two are the same operation, which is why JPY reads the
+   same either way.
+2. If any non-zero digit would fall past the units place, the write **fails**. Sub-minor-unit
+   money is not a rounding question this specification answers, and rounding it silently would
+   hide a precision decision inside a hash.
+3. Render the result by the integer rule above: no leading zeros, no `+`, one spelling of zero.
+   A negative amount keeps its sign.
+
+**Both units occur in real feeds, and confusing them is a factor-of-100 error.** A storefront
+may report `885.95` and a payment provider `50000`, both of them INR, meaning ₹885.95 and ₹500.
+The currency code does not tell those apart, because the difference is a **unit** and not a
+currency. That is why the unit is an input here rather than an assumption, and why the row that
+carries a monetary quantile vector records the unit its amounts arrived in.
+
+**The conversion consults no currency table, and yours should not either.** The reference
+implementation is never given the currency code — only the exponent — so there is nothing for
+it to look up. A canonicaliser that resolved a code to an exponent would have output depending
+on that table's contents at hash time, and reproducing our root would then require our table at
+our version. The point of this document is that you need nothing of ours. Where the exponent
+comes from is an input-assembly question, answered before hashing: **the prediction row records
+the exponent that was used**, so nothing re-derives it and a later revision of ISO 4217 cannot
+retroactively re-interpret a row that has already been anchored.
+
+### Vectors — currency
+
+The `currency` column is **illustrative**: it is printed so you can check the exponent against
+ISO 4217 yourself, and it is not an input to the conversion. `refused` means a conforming
+implementation must **reject** the amount rather than produce a value — a refusal is part of
+the specification, not an implementation detail.
+
+<!-- vectors:currency -->
+| # | currency | exponent | unit | amount | canonical |
+|---|---|---|---|---|---|
+| K1 | `INR` | `2` | `major_unit` | `1499.00` | `"149900"` |
+| K2 | `INR` | `2` | `major_unit` | `885.95` | `"88595"` |
+| K3 | `INR` | `2` | `minor_unit` | `50000` | `"50000"` |
+| K4 | `INR` | `2` | `major_unit` | `0.00` | `"0"` |
+| K5 | `JPY` | `0` | `major_unit` | `1500` | `"1500"` |
+| K6 | `JPY` | `0` | `minor_unit` | `1500` | `"1500"` |
+| K7 | `KWD` | `3` | `major_unit` | `1.234` | `"1234"` |
+| K8 | `KWD` | `3` | `minor_unit` | `1234` | `"1234"` |
+| K9 | `USD` | `2` | `major_unit` | `-3.50` | `"-350"` |
+| K10 | `INR` | `2` | `major_unit` | `1499.005` | `refused` |
+| K11 | `JPY` | `0` | `major_unit` | `0.5` | `refused` |
+| K12 | `INR` | `2` | `minor_unit` | `50000.5` | `refused` |
+| K13 | `KWD` | `3` | `major_unit` | `1.2345` | `refused` |
+<!-- /vectors:currency -->
+
+K2 and K3 are the pair worth reading twice: two INR amounts, one shift apart, and a hundred
+times different in what they mean. K5 and K7 are the two an INR-only implementation gets wrong
+in opposite directions — it multiplies the yen figure by a hundred, and it rejects the dinar
+figure as too precise when the precision is exactly right.
 
 ### Vectors — canonical JSON
 
@@ -395,12 +475,56 @@ outside implementation can reproduce these lines and digests from this document 
 | A3 | 9 | `01K1ABCDEFGHJKMNPQRSTVWXYZ` | `2026-08-01T12:34:56.789000Z` | `{"anchored_at":"2026-08-01T12:34:56.789000Z","latest_row_id":"01K1ABCDEFGHJKMNPQRSTVWXYZ","ledger_schema_version":"lg_0002","root_hash":"5f86acf63de9738760ed045e6a5ae5010a2f79266ab9852ac39244b533cd52ef","tree_size":"9"}` | `aef5859264b01090ed239a6d57289c8762172ab223e49af5693c1f046e98dfa2` |
 <!-- /vectors:anchor -->
 
+### 9a. The empty marker — what a quiet day publishes
+
+A day on which the Log held no rows still publishes a file. It is **not an anchor**: it commits
+to no tree, carries no root, and no proof can ever fold to it. It carries four fields, and the
+first of them says what it is:
+
+```
+{status, tree_size, ledger_schema_version, anchored_at}
+```
+
+| Field | Meaning |
+|---|---|
+| `status` | always the string `empty`. Its presence is what identifies the artifact |
+| `tree_size` | always `"0"` — the Log held no rows at `anchored_at` |
+| `ledger_schema_version` | as in section 9 |
+| `anchored_at` | when we looked. Still our own clock, still not evidence |
+
+**There is no `root_hash` and no `latest_row_id`, and their absence is the point.** A root over
+zero rows would assert a Log that does not exist, which section 7 already forbids; a marker
+makes the opposite claim — *there was nothing to anchor* — and that claim is true. The two are
+different statements, and only one of them can be made honestly on a quiet day.
+
+**Tell the two apart by reading `status`, never by noticing a field is missing.** An anchor
+carries no `status` field at all, and both shapes are listed exhaustively above: an artifact
+matching neither is malformed and must be rejected rather than guessed at.
+
+**Why publish anything at all on a quiet day.** So that the public record receives an entry
+every day, which makes a *gap* in the record unambiguous evidence that something failed rather
+than something a reader has to interpret. It also makes the Log's **start date publicly
+provable**: signed, third-party-timestamped markers running up to the first real anchor show
+exactly when we began carrying rows, which is worth more than the appearance of activity. We
+would rather publish "nothing happened today" than let silence be read either way.
+
+### Vectors — empty marker
+
+<!-- vectors:empty-marker -->
+| # | anchored_at | canonical line | SHA-256 |
+|---|---|---|---|
+| E1 | `2026-07-27T03:00:00.000000Z` | `{"anchored_at":"2026-07-27T03:00:00.000000Z","ledger_schema_version":"lg_0002","status":"empty","tree_size":"0"}` | `a7e7012665eda4b9ca8e146ca04f9b9bdf9a7ab42ba2e34c84980f233eedeabd` |
+| E2 | `2026-07-28T03:00:01.234567Z` | `{"anchored_at":"2026-07-28T03:00:01.234567Z","ledger_schema_version":"lg_0002","status":"empty","tree_size":"0"}` | `681ae9ecec38e7f5beae8994515168a681164fd9fdde1b269f443aa953ed88ec` |
+| E3 | `2026-08-01T12:34:56.789000Z` | `{"anchored_at":"2026-08-01T12:34:56.789000Z","ledger_schema_version":"lg_0001","status":"empty","tree_size":"0"}` | `1343cd7a7c8d1e7c265cbfc67d42a5c72906f37854c2aa32e7f2c89a65b63b8a` |
+<!-- /vectors:empty-marker -->
+
 ---
 
 ## 10. The medium, and the cadence
 
-Two media, written by **one job**, running **daily**. Both halves are a recorded decision
-(BUILD-STATE D-04, delegated and minuted as R-041), reversible by founder order.
+Two media, written by **one job**, running on a **daily floor and after each batch of new
+forecasts**. Both halves are a recorded decision (BUILD-STATE D-04, delegated and minuted as
+R-041), reversible by founder order.
 
 | Medium | What it is for | What it cannot do alone |
 |---|---|---|
@@ -422,19 +546,46 @@ payload line, with no privacy nonce — the digest is of a line being published 
 same commit, so there is nothing to withhold, and it means the digest in the receipt is the same
 value as `anchor_id`. A pending receipt is not presented as a confirmed one.
 
-The daily cadence is not cosmetic: anchor cadence must be strictly shorter than the shortest
-registry `k` (SLICE-01-SPEC §3.11(c)), so daily is what admits question types resolving in about
-two days, and a missed daily anchor is covered by the next day's run rather than opening a
-week-long gap.
+The cadence is not cosmetic, and it has two parts. Anchors publish on a **floor cadence** — today,
+once a day — **and again after each batch of new forecasts is written**. A date may therefore carry
+several publications, and a date on which nothing was forecast carries the floor's one.
+
+The floor exists because anchor cadence must be strictly shorter than the shortest registry `k`
+(SPEC-D2C §3.11(c)): it is what admits question types resolving in about two days, and it is what
+publishes the record on a day when nothing was forecast at all. The batch trigger exists because a
+forecast written an hour before its event cannot wait for tomorrow's floor run.
+
+**What is a fault here, and what is not.** Several publications on one date is normal operation. Do
+not read it as a defect, and do not read it as evidence that anything was rewritten — a published
+root is never revised, and an additional publication is an additional file, never an amendment to an
+existing one. **No publication on a date is still a fault**, and it is the fault the scheduled check
+in `.github/workflows/` exists to report.
+
+More anchors can only mean more coverage, never less. Each publication commits to every row written
+before it, so an extra publication during a day can only move rows from *not yet covered* to
+*covered*. It cannot uncover a row, it cannot narrow what an earlier root proves, and it cannot
+remove your ability to check anything you could have checked before it.
+
+**None of this changes how you check a forecast.** The procedure in sections 1 to 12 is unchanged:
+canonicalize the row, compute its leaf hash, fold the sibling path to a root, and confirm that root
+appears in a publication whose third-party timestamp is strictly earlier than the row's resolution.
+More publications mean more roots that might carry your row. They do not change what a root is, how
+it is built, or what folding one proves.
 
 ---
 
 ## 11. How a publication is made
 
-1. Rebuild the whole tree from every row, per section 7. A Log with no rows produces no
-   publication — section 7 again: there would be nothing to publish and publishing something
-   would assert a Log that does not exist.
-2. Build the payload of section 9 and take its SHA-256.
+1. Rebuild the whole tree from every row, per section 7. A Log with no rows produces **no
+   anchor** — section 7 again: there would be no root to publish and publishing one would
+   assert a Log that does not exist. It produces the empty marker of section 9a instead, which
+   travels the remaining steps unchanged: same digest rule, same receipt, same one commit, same
+   filename convention. **Each publication produces exactly one artifact**, and which of the two
+   it is depends only on whether the Log held rows at the moment that tree was built. A date
+   carries one artifact for each publication made on it — at least the floor's one, and one more
+   for each batch of forecasts written that day (section 10). Several on a date is normal; none
+   on a date is a fault.
+2. Build the payload of section 9, or the marker of section 9a, and take its SHA-256.
 3. Submit that digest to an OpenTimestamps calendar and keep the receipt.
 4. Commit the payload line **and** the receipt to the public repository in **one** commit, so
    the medium's timestamp covers both halves at one instant.
@@ -454,12 +605,20 @@ that we under-claim coverage, never that we over-claim it.**
 
 Sections 1 to 8 get you from a row to a root. Two steps remain:
 
-5. **Find the folded root in the published history.** Read the anchor payload files from the
-   public repository. Parse each line, re-serialize it by section 1, and require the bytes to
-   match: a line that has been reformatted or had a number substituted still parses as JSON but
-   is no longer the artifact whose digest was stamped. Then look for one whose `root_hash`
-   equals the root you folded, and check its `tree_size` equals the `tree_size` in your proof —
+5. **Find the folded root in the published history.** Read the payload files from the public
+   repository. Parse each line, re-serialize it by section 1, and require the bytes to match: a
+   line that has been reformatted or had a number substituted still parses as JSON but is no
+   longer the artifact whose digest was stamped. **Set aside every empty marker first** — an
+   artifact whose `status` is `empty` (section 9a) records a day with no rows and commits to no
+   tree, so it can never carry the root you folded and must not be treated as an anchor that
+   failed to match. Then, among the anchors that remain, look for one whose `root_hash` equals
+   the root you folded, and check its `tree_size` equals the `tree_size` in your proof —
    otherwise the proof and the anchor are about different trees.
+
+   A history that contains **only** empty markers is not a broken history. It says no rows had
+   been anchored by the last published date, which is a fact about the Log rather than a fault
+   in the record, and a verifier should say so in those words rather than reporting a generic
+   failure to find the root.
 6. **Check a third-party timestamp precedes the resolution.** Obtain the timestamp from outside
    the payload, by either route:
 
@@ -483,6 +642,7 @@ the claim.
 
 ```
 python3 verify.py --self-test
+python3 verify.py --history --anchors anchors/
 python3 verify.py --claim claim.json --anchors anchors/
 ```
 
@@ -492,11 +652,52 @@ row. A `claim.json` is `{"row": {...}, "proof": {...}, "resolved_at": "..."}`, w
 carries the five hashed parts of section 5 and `proof` carries `leaf_index`, `tree_size` and
 `path` as section 8 defines them.
 
+`--history` lists the published record and says of each date whether rows were anchored,
+reporting an empty marker as **"no rows anchored on this date"**. That is neither a success nor
+a failure — it is the third thing the record can say, alongside an anchor that verifies and one
+that does not, and it is how you read when the Log started carrying rows.
+
 What it proves offline: the row hashes to what the tree committed to, the proof folds to a
 published root, and the receipt beside that payload stamps that payload's digest and not some
 other. What it does not prove offline: that Bitcoin carries the attestation — run `ots verify`
 for that. It will tell you which of these it established rather than collapsing them into one
 word.
+
+### 12a. What an anchor attests, and what it does not
+
+You have just folded a root and found it in the published history. This section says exactly
+what you have established, because reading more into an anchor than it carries is the failure
+this document exists to prevent.
+
+**What an anchor attests.** That the root existed at a time **a named third party recorded** —
+GitHub's own commit date, or a Bitcoin attestation through OpenTimestamps — and therefore that
+every row the tree covers was written before that time and has not changed since. That is the
+Log's **integrity**, and it is the whole of what §45(e) claims.
+
+**What an anchor does not attest: that the Log contains the rows it should.** An anchor is
+produced by the anchor job, so **a run of anchors attests the anchor job's liveness, not the
+ledger writer's.** A silently broken writer publishes exactly the same sequence of anchors as a
+genuinely quiet day. Nothing in the published record distinguishes those two, and no amount of
+anchoring will.
+
+**The distinguishing data is already in the payload, and you can use it.** `tree_size` is one
+of section 9's five fields. **Consecutive anchors whose `tree_size` has not changed mean no rows
+were added between them — which is indistinguishable from a writer that has stopped.** Read a
+run of unchanged sizes as *"nothing was anchored in this period"*, never as *"nothing
+happened"*. The first is what the record says; the second is a claim it cannot make.
+
+Whether we made the predictions we should have is the Log's **productivity**, and that is a
+different question from its integrity. It is answered on the honesty surface, against a stated
+firing cadence, and not here. An anchor is not the instrument for it and is not presented as
+one.
+
+**The set of parties whose recording counts is explicit, not implied.** Section 10 names the two
+media and section 12 names the two routes to a timestamp. There is no third: an artifact
+carrying a timestamp from anywhere else — including ours — is **not attested**, and
+`anchored_at` is not a fallback. That set is now enumerated in our own code as a closed list,
+so the internal decision about whether a publication is attested asks the same question section
+12 has always asked of you. Those two answers used to be able to differ. **Where they did, the
+verifier was right**, and the internal side is what changed.
 
 ---
 
@@ -515,7 +716,10 @@ resolution rate. So it stays in, visible, as a deferral.
 
 ---
 
-*Governed by the Simul8 Constitution v2.3 §22 and §45(e). Built to SLICE-01-SPEC §3.2, §3.10
+*Governed by the Simul8 Constitution v2.4 §22 and §45(e). Built to SPEC-D2C §3.2, §3.10
 and §3.11(d). Constants pinned by BUILD-STATE SL-13, R-010 and R-025; the medium and cadence by
-D-04 / R-041. Part 1 frozen at LOG pass, Part 2 at ANCHOR pass: a change to anything in this
-document is a written proposal to HQ, never a commit.*
+D-04 / R-041; the currency rule of section 1 and its vectors by R-127, R-131, R-132, R-133 and
+R-204, ratified as R-352 and R-353, which is also the authority for section 12a's wording
+(R-173). Part 1 frozen at LOG pass, Part 2 at ANCHOR pass: a change to anything in this
+document is a written proposal to HQ, never a commit — this one was, and the ruling is named
+above.*

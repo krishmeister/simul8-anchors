@@ -9,7 +9,7 @@ This program answers one question, and refuses to answer it optimistically:
     Was this prediction committed to a Merkle root that a third party timestamped BEFORE
     the prediction was resolved?
 
-The Simul8 Constitution v2.3 §45(e) permits presenting a prediction as independently
+The Simul8 Constitution v2.4 §45(e) permits presenting a prediction as independently
 verifiable only if that is true. A privately held tree can be rebuilt at any time, so "we
 recomputed it and it checks out" is not verification. Verification is someone with none of our
 code and none of our infrastructure getting the same bytes we did, and then finding the result
@@ -37,6 +37,14 @@ THE PROCEDURE (docs/VERIFY.md part 1 section 8, completed by part 2 section 12):
     4. fold the sibling path to a root          domain-separated, "node:"
     5. find that root in the published anchors  the payload line, byte for byte
     6. check the third-party timestamp          obtained outside the payload, and precedes
+
+WHAT `--self-test` COVERS THAT `--claim` DOES NOT. The currency rule of part 1 section 1 is
+implemented here and checked against the document's vectors, but it is NOT on the path a claim
+takes: by the time a row is published its monetary values are already decimal strings, and
+verifying the row hashes those strings. The rule matters to whoever PRODUCES them, and to you
+if you want to check our arithmetic rather than only our commitment to it. It is implemented
+because the document publishes vectors for it, and every vector the document publishes is one
+this file must reproduce.
 
 Steps 1-4 are part 1 and need nothing but this file. Steps 5-6 are part 2 and need the public
 anchor history, which is the repository this file ships in.
@@ -231,6 +239,59 @@ def canonical_timestamp(value):
 
 
 # =====================================================================================
+# 2a. Currency. docs/VERIFY.md part 1 section 1, "Currency, and the ISO 4217 exponent".
+# =====================================================================================
+
+#: The complete set. An unrecognised unit is refused, never guessed at.
+MONEY_UNITS = ("major_unit", "minor_unit")
+
+_DECIMAL_TEXT = re.compile(r"^\d+(\.\d+)?$")
+
+
+def minor_unit_string(amount, exponent, unit):
+    """An amount as an integer count of its currency's minor unit.
+
+    Written from the document's three steps and NOT from the private implementation, which is
+    the only way the document's sufficiency gets tested rather than assumed. The private code
+    shifts a decimal's own digit tuple; this shifts the text. Two mechanisms agreeing on every
+    published vector says something; one mechanism copied twice would not.
+
+    THE CURRENCY CODE IS NOT AN ARGUMENT. Only the exponent is. Given the code, an
+    implementation would be one edit away from looking the exponent up in a table, and then
+    reproducing a Simul8 root would require that table at the version we happened to hold.
+    """
+    if unit not in MONEY_UNITS:
+        raise VerificationError(f"unit must be one of {list(MONEY_UNITS)}, got {unit!r}")
+    if isinstance(exponent, bool) or not isinstance(exponent, int) or exponent < 0:
+        raise VerificationError(f"exponent must be a non-negative integer, got {exponent!r}")
+
+    text = str(amount).strip()
+    sign = ""
+    if text[:1] in "+-":
+        sign = "-" if text[0] == "-" else ""
+        text = text[1:]
+    if not _DECIMAL_TEXT.match(text):
+        raise VerificationError(f"{amount!r} is not a decimal amount")
+
+    whole, _, frac = text.partition(".")
+    # `minor_unit` is already an integer count of the minor unit, so it shifts by nothing.
+    shift = exponent if unit == "major_unit" else 0
+
+    if shift >= len(frac):
+        digits = whole + frac + "0" * (shift - len(frac))
+    else:
+        if set(frac[shift:]) != {"0"}:
+            raise VerificationError(
+                f"{amount!r} is finer than one minor unit at exponent {exponent}; the "
+                "specification refuses it rather than rounding it"
+            )
+        digits = whole + frac[:shift]
+
+    digits = digits.lstrip("0") or "0"
+    return digits if digits == "0" else f"{sign}{digits}"
+
+
+# =====================================================================================
 # 3. Hashing: the row, the leaf, the node. docs/VERIFY.md part 1 sections 5 and 6.
 # =====================================================================================
 
@@ -338,13 +399,26 @@ ANCHOR_PAYLOAD_KEYS = frozenset(
     ("root_hash", "tree_size", "latest_row_id", "ledger_schema_version", "anchored_at")
 )
 
+#: A quiet day's artifact. The published history carries an entry every day, and on a day the
+#: Log held no rows that entry says so rather than being absent. It is NOT an anchor: it
+#: commits to no tree, carries no root, and no proof can ever fold to it.
+EMPTY_MARKER_KEYS = frozenset(("status", "tree_size", "ledger_schema_version", "anchored_at"))
+
+STATUS_EMPTY = "empty"
+
 OTS_HEADER_MAGIC = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94"
 OTS_OP_SHA256 = b"\x08"
 _OTS_DIGEST_END = 34
 
 
 class Anchor:
-    """One published anchor: its payload, its digest, and where it came from."""
+    """One published artifact: its payload, its digest, and where it came from.
+
+    Covers both published shapes, because a reader walking the history meets both and the
+    difference must be reported rather than smoothed over. `is_empty` decides which, from the
+    marker's own `status` field — never from noticing that `root_hash` is missing, because a
+    shape identified by what it lacks stops being identified the moment a field is added.
+    """
 
     def __init__(self, path, payload, line):
         self.path = path
@@ -353,12 +427,28 @@ class Anchor:
         self.digest = sha256_hex(canonical(payload))
 
     @property
+    def is_empty(self):
+        return self.payload.get("status") == STATUS_EMPTY
+
+    @property
     def root_hash(self):
+        """The committed root. An empty marker has none, and asking is a programming error."""
+        if self.is_empty:
+            raise VerificationError(
+                f"{self.path.name} is an empty marker: it records that the Log held no rows "
+                "at that instant and commits to no tree, so it has no root to compare against"
+            )
         return self.payload["root_hash"]
 
     @property
     def tree_size(self):
         return int(self.payload["tree_size"])
+
+    def describe(self):
+        """One line saying which kind of artifact this is, in a reader's words."""
+        if self.is_empty:
+            return f"{self.path.name}: no rows anchored on this date"
+        return f"{self.path.name}: anchor over {self.tree_size} row(s), root {self.root_hash}"
 
     def receipt_path(self):
         return Path(str(self.path) + ".ots")
@@ -383,10 +473,14 @@ def load_anchor(path):
         raise VerificationError(f"{path} is not JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise VerificationError(f"{path} does not contain a JSON object")
-    if set(payload) != ANCHOR_PAYLOAD_KEYS:
+    if payload.get("status") == STATUS_EMPTY:
+        expected, description = EMPTY_MARKER_KEYS, "an empty marker"
+    else:
+        expected, description = ANCHOR_PAYLOAD_KEYS, "a published anchor payload"
+    if set(payload) != expected:
         raise VerificationError(
-            f"{path} has fields {sorted(payload)}; a published anchor payload has exactly "
-            f"{sorted(ANCHOR_PAYLOAD_KEYS)}"
+            f"{path} has fields {sorted(payload)}; {description} has exactly "
+            f"{sorted(expected)}"
         )
     for key, value in payload.items():
         if not isinstance(value, str):
@@ -403,7 +497,12 @@ def load_anchor(path):
 
 
 def load_anchor_history(directory):
-    """Every anchor payload in the public history, oldest filename first."""
+    """Every published artifact in the public history, oldest filename first.
+
+    Anchors and empty markers together, in the order the filenames sort — which is the order
+    they were published, because the filename leads with the instant. Callers that are looking
+    for a root must filter to `not entry.is_empty` first; a marker commits to no tree.
+    """
     root = Path(directory)
     if not root.exists():
         raise VerificationError(f"no anchor directory at {root}")
@@ -615,13 +714,31 @@ def verify_claim(claim, anchors_directory, attested_at=None, resolved_at=None, o
     # -- step 5 -------------------------------------------------------------------
     step(5, "find that root in the published anchor history (part 2 section 12)")
     history = load_anchor_history(anchors_directory)
-    write(f"    {len(history)} published anchor(s) read from {anchors_directory}\n")
-    matching = [anchor for anchor in history if anchor.root_hash == folded]
+    anchors = [entry for entry in history if not entry.is_empty]
+    markers = [entry for entry in history if entry.is_empty]
+    write(
+        f"    {len(history)} published artifact(s) read from {anchors_directory}: "
+        f"{len(anchors)} anchor(s), {len(markers)} empty marker(s)\n"
+    )
+    if markers:
+        # Reported, not hidden. An empty marker is a day the Log held no rows — neither a
+        # success nor a failure, and a reader who is told only the anchor count would wonder
+        # why the history has gaps it does not have.
+        write(f"    {len(markers)} date(s) published no rows anchored on this date\n")
+
+    matching = [anchor for anchor in anchors if anchor.root_hash == folded]
     if not matching:
-        failures.append(
+        detail = (
             f"the folded root {folded} appears in no published anchor. Either this row was "
             "never anchored, or the proof belongs to a different tree."
         )
+        if not anchors:
+            detail = (
+                f"the folded root {folded} appears in no published anchor, because the "
+                f"history contains no anchors at all — {len(markers)} empty marker(s) and "
+                "nothing else. No rows had been anchored by the last published date."
+            )
+        failures.append(detail)
         write("    NOT FOUND — no published anchor carries this root\n")
         _verdict(write, failures)
         return False
@@ -797,6 +914,55 @@ ANCHOR_VECTORS = [
     ),
 ]
 
+#: From part 1's `vectors:currency` table: (exponent, unit, amount, canonical), where the
+#: canonical value None means the specification REFUSES the amount. A refusal is part of the
+#: rule, so an implementation that accepted these would be wrong in the direction that does
+#: not announce itself — it would silently produce a number for money it could not represent.
+#: The currency code is deliberately absent: it is illustrative in the document and is not an
+#: input here.
+CURRENCY_VECTORS = [
+    (2, "major_unit", "1499.00", "149900"),
+    (2, "major_unit", "885.95", "88595"),
+    (2, "minor_unit", "50000", "50000"),
+    (2, "major_unit", "0.00", "0"),
+    (0, "major_unit", "1500", "1500"),
+    (0, "minor_unit", "1500", "1500"),
+    (3, "major_unit", "1.234", "1234"),
+    (3, "minor_unit", "1234", "1234"),
+    (2, "major_unit", "-3.50", "-350"),
+    (2, "major_unit", "1499.005", None),
+    (0, "major_unit", "0.5", None),
+    (2, "minor_unit", "50000.5", None),
+    (3, "major_unit", "1.2345", None),
+]
+
+#: Empty markers (part 2 section 9). Pinned for the same reason the anchor vectors are: a
+#: foreign implementation must be able to reproduce the bytes of every artifact the history
+#: contains, and before the first real anchor these are the only artifacts in it.
+EMPTY_MARKER_VECTORS = [
+    (
+        (
+            '{"anchored_at":"2026-07-27T03:00:00.000000Z","ledger_schema_version":"lg_0002",'
+            '"status":"empty","tree_size":"0"}'
+        ),
+        "a7e7012665eda4b9ca8e146ca04f9b9bdf9a7ab42ba2e34c84980f233eedeabd",
+    ),
+    (
+        (
+            '{"anchored_at":"2026-07-28T03:00:01.234567Z","ledger_schema_version":"lg_0002",'
+            '"status":"empty","tree_size":"0"}'
+        ),
+        "681ae9ecec38e7f5beae8994515168a681164fd9fdde1b269f443aa953ed88ec",
+    ),
+    (
+        (
+            '{"anchored_at":"2026-08-01T12:34:56.789000Z","ledger_schema_version":"lg_0001",'
+            '"status":"empty","tree_size":"0"}'
+        ),
+        "1343cd7a7c8d1e7c265cbfc67d42a5c72906f37854c2aa32e7f2c89a65b63b8a",
+    ),
+]
+
 
 def self_test(out=None):
     """Check this file against the document's published vectors. Needs only this file."""
@@ -812,6 +978,18 @@ def self_test(out=None):
         produced = canonical_timestamp(given)
         if produced != expected:
             failures.append(f"timestamp {given} -> {produced}, expected {expected}")
+
+    for exponent, unit, amount, expected in CURRENCY_VECTORS:
+        try:
+            produced = minor_unit_string(amount, exponent, unit)
+        except VerificationError:
+            produced = None
+        if produced != expected:
+            shown = "refused" if expected is None else repr(expected)
+            failures.append(
+                f"currency {amount} at exponent {exponent} as {unit} -> "
+                f"{'refused' if produced is None else repr(produced)}, expected {shown}"
+            )
 
     seed = sha256_hex(b"row-0")
     if leaf_hash(seed) != TREE_VECTORS[1]:
@@ -838,6 +1016,18 @@ def self_test(out=None):
         if produced != expected:
             failures.append(f"anchor digest {produced}, expected {expected}")
 
+    for line, expected in EMPTY_MARKER_VECTORS:
+        parsed = json.loads(line)
+        if _render(parsed) != line:
+            failures.append(f"empty marker is not canonical under this implementation: {line}")
+        produced = sha256_hex(canonical(parsed))
+        if produced != expected:
+            failures.append(f"empty marker digest {produced}, expected {expected}")
+        if set(parsed) != EMPTY_MARKER_KEYS:
+            failures.append(f"empty marker vector has fields {sorted(parsed)}")
+        if parsed.get("tree_size") != "0":
+            failures.append("an empty marker vector claims a non-zero tree_size")
+
     try:
         canonical({"n": 1})
     except VerificationError:
@@ -847,8 +1037,9 @@ def self_test(out=None):
 
     write(
         f"self-test: {len(CANONICAL_VECTORS)} canonical, {len(TIMESTAMP_VECTORS)} timestamp, "
-        f"{len(TREE_VECTORS)} tree, {len(ROW_HASH_VECTORS)} row-hash, "
-        f"{len(ANCHOR_VECTORS)} anchor vectors\n"
+        f"{len(CURRENCY_VECTORS)} currency, {len(TREE_VECTORS)} tree, "
+        f"{len(ROW_HASH_VECTORS)} row-hash, {len(ANCHOR_VECTORS)} anchor, "
+        f"{len(EMPTY_MARKER_VECTORS)} empty-marker vectors\n"
     )
     if failures:
         write("SELF-TEST FAILED\n")
@@ -862,7 +1053,7 @@ def self_test(out=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Verify a Simul8 prediction against the published anchor history.",
-        epilog="Constitution v2.3 §45(e). Procedure: VERIFY.md parts 1 and 2.",
+        epilog="Constitution v2.4 §45(e). Procedure: VERIFY.md parts 1 and 2.",
     )
     parser.add_argument("--claim", help="JSON file holding {row, proof, resolved_at}")
     parser.add_argument("--anchors", default="anchors", help="the published anchor directory")
@@ -873,13 +1064,36 @@ def main(argv=None):
     )
     parser.add_argument("--resolved-at", help="the resolution instant, if not in the claim file")
     parser.add_argument("--self-test", action="store_true", help="check against the vectors")
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="list the published history, saying of each date whether rows were anchored",
+    )
     arguments = parser.parse_args(argv)
 
     if arguments.self_test:
         return 0 if self_test() else 1
 
+    if arguments.history:
+        # Neither success nor failure: it reports what the public record contains. A day with
+        # no rows is a fact about the Log, not a fault, and reading the history is how anyone
+        # establishes when the Log actually started carrying rows.
+        try:
+            history = load_anchor_history(arguments.anchors)
+        except VerificationError as exc:
+            sys.stdout.write(f"{exc}\n")
+            return 1
+        anchored = sum(1 for entry in history if not entry.is_empty)
+        for entry in history:
+            sys.stdout.write(f"  {entry.describe()}\n")
+        sys.stdout.write(
+            f"{len(history)} published artifact(s): {anchored} anchor(s), "
+            f"{len(history) - anchored} empty marker(s)\n"
+        )
+        return 0
+
     if not arguments.claim:
-        parser.error("--claim is required unless --self-test is given")
+        parser.error("--claim is required unless --self-test or --history is given")
 
     try:
         claim = json.loads(Path(arguments.claim).read_text(encoding="utf-8"))
