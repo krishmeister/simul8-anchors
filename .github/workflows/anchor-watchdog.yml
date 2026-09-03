@@ -1,0 +1,92 @@
+# The anchor watchdog. Published to simul8-anchors as .github/workflows/anchor-watchdog.yml.
+#
+# BUILD-STATE R-067, implementing R-062 mechanism (2). Constitution 45(e); D-04.
+#
+# WHY THIS LIVES HERE AND NOT ON OUR INFRASTRUCTURE. There are two classes of anchor failure
+# and they need two different mechanisms:
+#
+#   (1) IN-FLIGHT        the job ran and then failed. Something is alive to notice and report
+#                        it, so in-band alerting through job_runs is adequate.
+#   (2) PRE-CONNECTION   the credential is missing, the worker never started, the machine is
+#                        dead, the account is suspended. NOTHING in-band can ever report this,
+#                        because reporting it means detecting an ABSENCE rather than catching
+#                        an error. This file is mechanism (2).
+#
+# It is the stronger of the two precisely because it does not know how we are built. It checks
+# the actual published artifact — did the public record receive an entry for the date — rather than
+# an internal proxy for it, so it also catches failure modes nobody has imagined yet.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────
+# CREDENTIAL-FREE ISOLATION IS A CONSTRAINT, NOT A CONVENIENCE. Do not "improve" this
+# workflow by relaxing any of the following. Each one is load-bearing:
+#
+#   * It holds NO credential of ours. The only token it uses is the built-in GITHUB_TOKEN,
+#     which GitHub scopes to this public repository.
+#   * It imports NONE of our code — not verify.py, not anything from simul8-beta. The few
+#     constants watchdog.py needs are restated there rather than shared, deliberately.
+#   * It touches NEITHER Fly NOR Supabase, and knows no hostname belonging to either.
+#
+# Each of those is what makes this a genuinely different failure domain from the thing it
+# watches. A watchdog that reads our database to decide whether our database is reachable is
+# not a watchdog. If a future edit needs one of our secrets to work, that edit is wrong.
+# ─────────────────────────────────────────────────────────────────────────────────────────
+#
+# ACCEPTED RESIDUAL, ruled and not closable: if GitHub Actions is down, or this schedule is
+# disabled, the absence of an alert is indistinguishable from success. Closing it would need a
+# watcher for the watcher, and so on. It is tolerable because the watchdog is OPERATIONAL, not
+# constitutional — the integrity claim rests on anchors that did publish carrying third-party
+# timestamps, and the Bitcoin path makes that independent of any monitoring we run.
+#
+# Recorded constraint: scheduled workflows run from the default branch only.
+
+name: anchor watchdog
+
+on:
+  schedule:
+    # 05:00 UTC — two hours after the 03:00 UTC anchor slot. NOT 03:05: GitHub's cron is
+    # best-effort and drifts by tens of minutes under load, so checking minutes after the slot
+    # manufactures false alarms, and a watchdog that cries wolf is a watchdog that gets muted.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "UTC date to check, YYYY-MM-DD. Defaults to today."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check that the public record received its entry
+        id: check
+        env:
+          WATCHDOG_DATE: ${{ inputs.date }}
+        run: python3 .github/workflows/watchdog.py
+
+      # Delivery is an ISSUE, not notification email: an issue is durable, is visible in the
+      # repository itself, and does not depend on an account notification setting nobody will
+      # remember having set. One open issue is reused rather than filing a new one per day, so
+      # a long outage reads as one incident with a history instead of a wall of duplicates.
+      - name: open or update the incident issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          title="anchor watchdog: the public record is missing an entry"
+          body=$(cat watchdog-report.md 2>/dev/null \
+            || echo "The watchdog failed before it could write a report. See the run log.")
+          existing=$(gh issue list --state open --search "$title in:title" \
+            --json number --jq 'first | .number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
