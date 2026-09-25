@@ -60,9 +60,24 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # 0bg (R-S914): PINNED to the label this workflow's greens ran on. Every green read, 4 to
+    # 25 September 2026, ran `ubuntu-latest` as image `ubuntu-24.04`, and `ubuntu-latest`
+    # moves to Ubuntu 26 from 19 October 2026 (runner-images #14748). A pin fixes the OS
+    # line, not the image version, which is why the first step prints it.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # FIRST, so that even a run that goes red says which machine it ran on. The same step,
+      # verbatim, as the build repository's CI, so both print the same way. Nothing is piped.
+      - name: runner image and OS
+        run: |
+          for name in $(compgen -e); do
+            case "$name" in Image*) echo "exposed: $name=${!name}" ;; esac
+          done
+          echo "image: ImageOS=${ImageOS:-<unset>} ImageVersion=${ImageVersion:-<unset>}"
+          echo "os: $(. /etc/os-release && echo "$PRETTY_NAME (VERSION_ID $VERSION_ID)")"
+          echo "kernel: $(uname -r)"
+
+      - uses: actions/checkout@v5
 
       - name: check that the public record received its entry
         id: check
