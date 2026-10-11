@@ -438,7 +438,7 @@ One anchor publication is one **canonical JSON line** carrying five fields, plus
 |---|---|
 | `root_hash` | the root over every row in the Log at publication time, per section 7 |
 | `tree_size` | how many **rows** the tree covers; duplicated nodes are not rows |
-| `latest_row_id` | the `row_id` at the tip when the tree was built |
+| `latest_row_id` | the `row_id` of the last row the tree covers: its last leaf |
 | `ledger_schema_version` | the applied Alembic revision, e.g. `lg_0002`, so a reader of an old publication knows which schema produced it |
 | `anchored_at` | when **we** built the tree — see the warning below |
 
@@ -458,9 +458,13 @@ among its examples; a publication containing a JSON number is malformed.
 auditor holding a resolution row's `anchor_coverage.anchor_id` can recompute it from the
 published bytes and confirm the two name the same publication.
 
-Each publication is one file. The trailing newline in the file is an ordinary text-file
-convention and is **not** part of the hashed bytes — section 1 emits no insignificant
-whitespace — so strip it before hashing and the digest is unchanged.
+Each publication is one file, and the file's bytes **are** the hashed bytes: the line of
+section 1 and nothing after it, with no trailing newline. The SHA-256 of the file as published
+is therefore the `anchor_id` and the digest its OpenTimestamps receipt stamps, which is what
+lets the standard client check the receipt against the file with nothing stripped (section
+12). Whitespace around the line, if a copy has gained any, is never part of the hashed bytes.
+`verify.py` ignores it. The standard OpenTimestamps client does not: it hashes the whole file,
+so it refuses a copy that has gained any.
 
 ### Vectors — anchor payload
 

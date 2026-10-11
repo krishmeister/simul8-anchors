@@ -462,8 +462,9 @@ def load_anchor(path):
     string is a different artifact whose SHA-256 is not the digest that was stamped — and it
     would still parse as JSON, which is exactly why parsing alone is not enough.
 
-    The trailing newline is a text-file convention and not part of the hashed bytes: RFC 8785
-    emits no insignificant whitespace, so it is stripped before comparison.
+    A published file is the line and nothing after it. Surrounding whitespace, if a copy has
+    gained any, is not part of the hashed bytes — RFC 8785 emits no insignificant whitespace —
+    so it is stripped before comparison.
     """
     raw = Path(path).read_text(encoding="utf-8")
     line = raw.strip()
