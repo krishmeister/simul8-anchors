@@ -60,49 +60,107 @@ python3 verify.py --self-test
 # 2. See what the published record contains, date by date.
 python3 verify.py --history --anchors anchors/
 
-# 3. Check an actual forecast, given the row and its inclusion proof.
-python3 verify.py --claim claim.json --anchors anchors/
+# 3. Check an actual forecast, given the row and its inclusion proof, and the two times you
+#    obtained yourself (see "The timestamp is the part that matters" below).
+python3 verify.py --claim claim.json --anchors anchors/ \
+    --attested-at <the anchor's time> --resolved-at <the resolution time>
 ```
+
+The last line it prints is the verdict, and the exit status goes with it: `VERIFIED` (0),
+`PROOF HOLDS, TIMES NOT YOUR OWN` (3), `NOT VERIFIED` (1), or `NOT JUDGED` (4) when part of
+the folder you named could not be opened or read on your machine and what was read does not
+decide it. Above a passing verdict it says what
+was checked, and whose each of the two times is.
 
 A `claim.json` looks like this, and is what Simul8 hands you alongside a forecast:
 
 ```json
 {
-  "row":   { "payload": {...}, "prev_hash": "...", "row_type": "prediction",
-             "operator_id": "...", "created_at": "..." },
-  "proof": { "leaf_index": 0, "tree_size": 3,
-             "path": [ { "side": "right", "hash": "..." } ] },
+  "row":   { "row_id": "...", "row_type": "prediction", "created_at": "...",
+             "operator_id": "...", "payload": {...}, "prev_hash": "..." },
+  "proof": { "leaf_index": "2", "tree_size": "3",
+             "path": [ { "side": "left", "hash": "..." } ] },
   "resolved_at": "2026-11-07T18:30:00.000000Z"
 }
 ```
 
+The six members of `row` and the three members of `proof` are all required, and a claim has no
+member of its own besides `row`, `proof` and `resolved_at`. `leaf_index` and `tree_size` are
+written as strings of digits: a claim file holds no JSON number. `row` may also state its own
+`row_hash`, which the verifier compares with the hash it computes. A claim that states any other
+member, or repeats a key, is refused. The example is the last of three rows: its
+path has one step, because the number of steps and the side of each are fixed by the row's index
+and the size of the tree.
+
 The verifier prints each step, so you can see where it agrees and where it does not rather than
-being handed a verdict. It recomputes the row's hash **from the row's content** — not from the
-row's own claim about its hash — folds the proof to a root, finds that root in the anchor history
-here, and then checks the timestamp.
+being handed a verdict. It recomputes the row's hash **from the row's six members** — not from
+the row's own claim about its hash — checks that the path is the path of that index in a tree of
+that size, folds it to a root, finds that root in the anchor history here under the same tree
+size, and then compares two times.
+
+It reads only a regular file, and no more of it than it may hold: a link to a device, a named
+pipe, or a file far longer than the format allows is refused by name. It reads each published
+file as bytes. A copy that has gained white space, a carriage return or
+a byte-order mark is not the file that was stamped, and is refused by name: fetch it again with
+`git cat-file blob HEAD:<path>`, or download the raw file. A file that is not a well-formed
+publication is named in the transcript and passed over when a forecast is checked. `--history`
+fails on such a file, and on a history no Log could have written: sizes that go down, one size
+under two roots, one root under two sizes, an empty marker after an anchor, or lines that do not
+form one chain. A folder or a regular file your machine cannot open or read is a fact about the
+reading here, not about the record: `--history` names it and ends "HISTORY NOT JUDGED", with exit status 4,
+unless what it did read shows a defect, which fails the history. A link where a published file
+should be is a defect of the record, never a failed reading.
+
+Every published line names the line published immediately before it, in its field
+`previous_line_sha256`: the SHA-256 of that line's exact bytes, or `null` on the first line ever
+published and on no other. So the lines form one chain, and `--history` checks that no line was
+held back and slipped in later: placed between two lines, such a line names a line another line
+already names, which is a fork; placed at the end with an earlier instant, the instants go back.
+The chain does not show that a line was public on its date; that rests on the times, as before. The publishing job does not read the
+whole chain and does not look for a fork; `--history` does, where the whole chain is read.
+
+`verify.py` is pointed at a folder, and nothing it checks shows that the folder is this
+repository. So it speaks of the anchor files it read, and of the published record only on the
+condition that those files are an unchanged copy of the public repository.
 
 ## The timestamp is the part that matters
 
 Every anchor payload contains an `anchored_at` field. **It is not evidence, and `verify.py` will
 not use it.** It is a reading of our own clock and we could have written anything in it.
 
-The third-party timestamps are these, and you obtain them yourself:
+`verify.py` compares two times: the anchor's, and the time the forecast's outcome was resolved.
+Its last line is the plain word `VERIFIED` only when you supplied both yourself, with
+`--attested-at` and `--resolved-at`. The anchor's time this repository is built to give you is
+Bitcoin's:
 
 ```sh
-# GitHub's clock. Anchor commits are created server-side through GitHub's API, so GitHub —
-# not Simul8 — sets the committer date on them.
-git log --diff-filter=A --format=%cI -- anchors/2026/<file>.anchor.json
-
 # Bitcoin, via OpenTimestamps. Install the client from https://opentimestamps.org
 ots verify anchors/2026/<file>.anchor.json.ots
 ```
 
 A fresh receipt is *calendar-pending* — the calendar has committed to including the digest but no
 block carries it yet — so a recent anchor may not have a Bitcoin attestation, while an older one
-will. `verify.py` checks precedence against the commit date and tells you to run `ots verify` for
-the stronger, slower confirmation.
+will. `verify.py` reads the receipt beside each anchor file to its end and says what it claims:
+for a Bitcoin attestation, the block height and the value that block's Merkle root must have, in
+the order the receipt holds its bytes and reversed; for a pending one, the calendar. It fetches
+nothing and judges no block's clock, so it says what the receipt claims and never that it is so,
+and `ots verify` finishes the check. A receipt it cannot read, it calls unreadable to this
+program, and says why. The anchor job reads each receipt by the same rules before it publishes,
+and publishes nothing if the read fails.
 
-If no third-party timestamp can be obtained, `verify.py` reports **not verified**. It does not
+Without `--attested-at`, `verify.py` reads the date on the commit that added the file, from your
+clone. It uses that date only if one commit added the file, that commit holds exactly the file's
+bytes, and no later commit touched its path. A commit's date is a field of the commit, written
+when the commit was made: the program can read it and cannot tell who set it. It reads that date
+by running `git` in the folder you name with `--anchors`. A folder brings its own git settings,
+and git can be made to run other programs from them: name only a clone you made yourself with
+`git clone`. Without
+`--resolved-at` it reads the `resolved_at` in the claim file, which we write. In either case, if
+the proof holds and the times compare, the last line is `PROOF HOLDS, TIMES NOT YOUR OWN` and the
+exit status is 3, never the plain word. The transcript says where each time came from and what
+that source is worth.
+
+If no time can be obtained for the anchor, `verify.py` reports **not verified**. It does not
 fall back to ours.
 
 ## Found a discrepancy?
